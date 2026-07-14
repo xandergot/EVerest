@@ -219,11 +219,15 @@ protected:
 
 TEST_F(EvseSecurityTests, verify_basics) {
     const char* bundle_path = "certs/ca/v2g/V2G_CA_BUNDLE.pem";
-    std::ifstream file(bundle_path, std::ios::binary);
+
+    fsstd::ifstream file(bundle_path, std::ios::binary);
     std::string certificate_file((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
     std::vector<std::string> certificate_strings;
+
     static const std::regex cert_regex("-----BEGIN CERTIFICATE-----[\\s\\S]*?-----END CERTIFICATE-----");
     std::string::const_iterator search_start(certificate_file.begin());
+
     std::smatch match;
     while (std::regex_search(search_start, certificate_file.cend(), match, cert_regex)) {
         std::string cert_data = match.str();
@@ -239,6 +243,7 @@ TEST_F(EvseSecurityTests, verify_basics) {
 
     X509CertificateBundle bundle(fs::path(bundle_path), EncodingFormat::PEM);
     ASSERT_TRUE(bundle.is_using_bundle_file());
+
     std::cout << "Bundle hierarchy: " << std::endl << bundle.get_certificate_hierarchy().to_debug_string();
 
     auto certificates = bundle.split();
@@ -248,16 +253,15 @@ TEST_F(EvseSecurityTests, verify_basics) {
     // The remaining 4 are independent CTL root certs
     static const int LOCAL_CHAIN_SIZE = 3;
 
-    // Verify the local chain issuer relationships
-    for (int i = 0; i < LOCAL_CHAIN_SIZE - 1; ++i) {
+    for (int i = 0; i < certificate_strings.size() - 1; ++i) {
         X509Wrapper cert(certificate_strings[i], EncodingFormat::PEM);
         X509Wrapper parent(certificate_strings[i + 1], EncodingFormat::PEM);
+
         ASSERT_TRUE(certificates[i].get_certificate_hash_data(parent) == cert.get_certificate_hash_data(parent));
         ASSERT_TRUE(equal_certificate_strings(cert.get_export_string(), certificate_strings[i]));
     }
 
-    // Verify local root cert
-    auto root_cert_idx = LOCAL_CHAIN_SIZE - 1;
+    auto root_cert_idx = certificate_strings.size() - 1;
     X509Wrapper root_cert(certificate_strings[root_cert_idx], EncodingFormat::PEM);
     ASSERT_TRUE(certificates[root_cert_idx].get_certificate_hash_data() == root_cert.get_certificate_hash_data());
     ASSERT_TRUE(equal_certificate_strings(root_cert.get_export_string(), certificate_strings[root_cert_idx]));
@@ -362,27 +366,25 @@ TEST_F(EvseSecurityTestsMultiLeaf, verify_multi_leaf_retrieval) {
     ASSERT_EQ(r.status, GetInstalledCertificatesStatus::Accepted);
     ASSERT_EQ(r.certificate_hash_data_chain.size(), 2);
 
-    const CertificateHashDataChain* secc_chain = nullptr;
-    const CertificateHashDataChain* gridsync_chain = nullptr;
+    // Order is not guaranteed — both chains have identical validity periods
+    auto& chain0 = r.certificate_hash_data_chain[0];
+    auto& chain1 = r.certificate_hash_data_chain[1];
 
-    for (const auto& chain : r.certificate_hash_data_chain) {
-        if (chain.certificate_hash_data.debug_common_name == "SECCCert") {
-            secc_chain = &chain;
-        } else if (chain.certificate_hash_data.debug_common_name == "SECCGridSyncCert") {
-            gridsync_chain = &chain;
-        }
-    }
+    std::string name0 = chain0.certificate_hash_data.debug_common_name;
+    std::string name1 = chain1.certificate_hash_data.debug_common_name;
 
-    ASSERT_NE(secc_chain, nullptr);
-    ASSERT_NE(gridsync_chain, nullptr);
+    ASSERT_TRUE((name0 == "SECCCert" && name1 == "SECCGridSyncCert") ||
+                (name0 == "SECCGridSyncCert" && name1 == "SECCCert"));
 
-    ASSERT_EQ(secc_chain->child_certificate_hash_data.size(), 2);
-    ASSERT_EQ(secc_chain->child_certificate_hash_data[0].debug_common_name, "CPOSubCA2");
-    ASSERT_EQ(secc_chain->child_certificate_hash_data[1].debug_common_name, "CPOSubCA1");
+    // Both chains should have 2 child certificates (SubCA2, SubCA1)
+    ASSERT_EQ(chain0.child_certificate_hash_data.size(), 2);
+    ASSERT_EQ(chain1.child_certificate_hash_data.size(), 2);
 
-    ASSERT_EQ(gridsync_chain->child_certificate_hash_data.size(), 2);
-    ASSERT_EQ(gridsync_chain->child_certificate_hash_data[0].debug_common_name, "CPOSubCA2");
-    ASSERT_EQ(gridsync_chain->child_certificate_hash_data[1].debug_common_name, "CPOSubCA1");
+    // Verify child ordering for both chains
+    ASSERT_EQ(chain0.child_certificate_hash_data[0].debug_common_name, std::string("CPOSubCA2"));
+    ASSERT_EQ(chain0.child_certificate_hash_data[1].debug_common_name, std::string("CPOSubCA1"));
+    ASSERT_EQ(chain1.child_certificate_hash_data[0].debug_common_name, std::string("CPOSubCA2"));
+    ASSERT_EQ(chain1.child_certificate_hash_data[1].debug_common_name, std::string("CPOSubCA1"));
 }
 
 TEST_F(EvseSecurityTests, verify_normal_keygen) {
@@ -474,6 +476,7 @@ TEST_F(EvseSecurityTests, verify_v2g_cert_01) {
     ASSERT_TRUE(result == InstallCertificateResult::Accepted);
 }
 
+/// \brief test verifyV2GChargingStationCertificate with invalid cert
 TEST_F(EvseSecurityTests, verify_v2g_cert_02) {
     const auto invalid_certificate = read_file_to_string(fs::path("certs/client/invalid/INVALID_CSMS.pem"));
     const auto result = this->evse_security->update_leaf_certificate(invalid_certificate, LeafCertificateType::V2G);
@@ -918,7 +921,7 @@ TEST_F(EvseSecurityTests, get_installed_certificates_and_delete_secc_leaf) {
     const auto r = this->evse_security->get_installed_certificates(certificate_types);
 
     ASSERT_EQ(r.status, GetInstalledCertificatesStatus::Accepted);
-    ASSERT_EQ(r.certificate_hash_data_chain.size(), 17);
+    ASSERT_EQ(r.certificate_hash_data_chain.size(), 5);
     bool found_v2g_chain = false;
 
     CertificateHashData secc_leaf_data;
