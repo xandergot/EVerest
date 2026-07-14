@@ -138,9 +138,8 @@ void X509Wrapper::set_file(fs::path& path) {
 X509CertificateSource X509Wrapper::get_source() const {
     if (file.has_value()) {
         return X509CertificateSource::FILE;
-    } else {
-        return X509CertificateSource::STRING;
     }
+    return X509CertificateSource::STRING;
 }
 
 X509* X509Wrapper::get_x509_raw() const {
